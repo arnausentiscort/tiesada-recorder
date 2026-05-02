@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/tiesada-recorder/sw.js', { scope: '/tiesada-recorder/' })})}
