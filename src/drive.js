@@ -1,27 +1,62 @@
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
+const SCOPE = [
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/userinfo.profile',
+  'https://www.googleapis.com/auth/userinfo.email'
+].join(' ')
 
 let accessToken = null
 let tokenClient = null
+let userInfo = null  // { email, name, picture }
 
-export function initGoogleAuth(onAuthed) {
-  if (!window.google) return
+export function initGoogleAuth(onAuthed, onError) {
+  if (!window.google?.accounts) return
   tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
-    scope: 'https://www.googleapis.com/auth/drive.file',
-    callback: (response) => {
-      if (response.error) return
+    scope: SCOPE,
+    hint: localStorage.getItem('lastDriveEmail') || undefined,
+    callback: async (response) => {
+      if (response.error) {
+        const isOrgRestricted = response.error === 'access_denied' || response.error === 'unauthorized_client'
+        onError?.(isOrgRestricted
+          ? 'Compte bloquejat. A Google Cloud Console → Pantalla de consentiment OAuth → canvia a "Extern"'
+          : `Error d'autenticació: ${response.error}`
+        )
+        return
+      }
       accessToken = response.access_token
-      onAuthed()
+      await fetchUserInfo()
+      onAuthed(userInfo)
     }
   })
 }
 
 export function requestDriveAuth() {
-  tokenClient?.requestAccessToken()
+  tokenClient?.requestAccessToken({ prompt: 'select_account' })
+}
+
+export function requestAccountChange() {
+  tokenClient?.requestAccessToken({ prompt: 'select_account' })
 }
 
 export function isDriveAuthed() {
   return !!accessToken
+}
+
+export function getAccountInfo() {
+  return userInfo
+}
+
+async function fetchUserInfo() {
+  try {
+    const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+    if (res.ok) {
+      userInfo = await res.json()
+      localStorage.setItem('lastDriveEmail', userInfo.email)
+    }
+  } catch (_) {}
 }
 
 async function fetchDrive(path, options = {}) {
@@ -47,6 +82,20 @@ async function getOrCreateFolder(name, parentId = null) {
     body: JSON.stringify(body)
   })
   return folder.id
+}
+
+// Ensures tiesada_partits/models/ exists and checks for best.pt
+export async function ensureModelsFolder() {
+  if (!accessToken) return { hasBestPt: null, modelsId: null }
+  try {
+    const rootId = await getOrCreateFolder('tiesada_partits')
+    const modelsId = await getOrCreateFolder('models', rootId)
+    const q = `name='best.pt' and '${modelsId}' in parents and trashed=false`
+    const data = await fetchDrive(`files?q=${encodeURIComponent(q)}&fields=files(id)`)
+    return { modelsId, hasBestPt: (data.files?.length ?? 0) > 0 }
+  } catch (_) {
+    return { hasBestPt: null, modelsId: null }
+  }
 }
 
 export async function uploadToDrive(blob, filename, matchName) {
